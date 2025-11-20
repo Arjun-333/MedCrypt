@@ -10,6 +10,15 @@ from fl_simulation import (
 import threading
 
 app = FastAPI(title="MedCrypt Federated Server")
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],          # allow all origins (for local development)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # GLOBAL MODEL (one instance)
 global_model = SimpleCNN()
