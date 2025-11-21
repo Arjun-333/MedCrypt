@@ -30,24 +30,50 @@ class SimpleCNN(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-def synthetic_client_data(num_samples=200, input_shape=(1,28,28), num_classes=10, seed=None):
+def synthetic_client_data(num_samples=200, input_shape=(1,28,28), num_classes=10, seed=None, non_iid=False, client_id=0):
     """
     Returns (x, y) torch tensors for synthetic data.
-    Use seed to create slightly different distributions per client.
+    If non_iid=True, generates a skewed distribution based on client_id.
     """
     if seed is not None:
         torch.manual_seed(seed)
+    
     x = torch.randn(num_samples, *input_shape)
-    y = torch.randint(0, num_classes, (num_samples,))
+    
+    if non_iid:
+        # Non-IID: Each client sees mostly one class, with some noise
+        # Client 0 -> mostly class 0, 1, 2
+        # Client 1 -> mostly class 3, 4, 5
+        # etc.
+        # Simple logic: major class = client_id % num_classes
+        # But let's make it a bit broader: 3 classes per client
+        start_class = (client_id * 3) % num_classes
+        end_class = start_class + 3
+        
+        # Generate labels mostly within [start_class, end_class)
+        # 80% probability of being in the dominant classes
+        probs = torch.ones(num_samples) * 0.2
+        # We'll just force them for simplicity of demonstration
+        y = torch.randint(start_class, end_class, (num_samples,)) % num_classes
+    else:
+        # IID: Uniform distribution
+        y = torch.randint(0, num_classes, (num_samples,))
+        
     return x, y
 
-def local_train(model, data, epochs=1, lr=0.01, dp_noise_std=0.0, device='cpu'):
+def local_train(model, data, epochs=1, lr=0.01, dp_noise_std=0.0, mu=0.0, device='cpu'):
     """
     Train a copy of 'model' on given data and return the trained state_dict.
-    If dp_noise_std > 0, add gaussian noise to parameters to simulate local DP.
+    - dp_noise_std: Add gaussian noise to gradients/params for Differential Privacy.
+    - mu: FedProx proximal term weight. If > 0, penalizes deviation from global model.
     """
+    # Keep a copy of global weights for FedProx calculation
+    global_model = copy.deepcopy(model).to(device)
+    global_model.eval()
+    
     model = copy.deepcopy(model).to(device)
     model.train()
+    
     x, y = data
     x = x.to(device)
     y = y.to(device)
@@ -62,13 +88,22 @@ def local_train(model, data, epochs=1, lr=0.01, dp_noise_std=0.0, device='cpu'):
             idx = perm[i:i+batch_size]
             xb = x[idx]
             yb = y[idx]
+            
             opt.zero_grad()
             out = model(xb)
             loss = criterion(out, yb)
+            
+            # FedProx Proximal Term: mu/2 * ||w - w_t||^2
+            if mu > 0:
+                prox_loss = 0.0
+                for p, g_p in zip(model.parameters(), global_model.parameters()):
+                    prox_loss += ((p - g_p) ** 2).sum()
+                loss += (mu / 2) * prox_loss
+            
             loss.backward()
             opt.step()
 
-    # Simulate DP by adding Gaussian noise to parameters (for prototype/demo only)
+    # Simulate DP by adding Gaussian noise to parameters
     if dp_noise_std and dp_noise_std > 0:
         with torch.no_grad():
             for p in model.parameters():
